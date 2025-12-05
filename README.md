@@ -1,6 +1,6 @@
-# discord-realtime-voice2text-bot
+# discord-codex-multimodal-bot
 
-Discord の VC 音声をリアルタイムに文字起こししつつ、Codex CLI と連携した会話ができる Go 製ボットです。音声字幕パイプラインとチャットパイプラインを分離し、`/join` `/leave` `/chat` `/start` `/reset` `/thread` を提供しています。
+Discord の VC 音声をリアルタイムに文字起こししつつ、Codex CLI や Gemini 連携でチャンネル/スレッド対話を自動化する Go 製マルチモーダルボットです。音声字幕パイプラインとチャットパイプラインを分離し、`/join` `/leave` `/chat` `/start` `/reset` `/thread` を提供しています。
 
 ## できること
 
@@ -65,8 +65,8 @@ go run ./cmd/bot
 ビルドしてから実行する場合:
 
 ```fish
-go build -o bin/discord-realtime-voice2text-bot ./cmd/bot
-./bin/discord-realtime-voice2text-bot
+go build -o bin/discord-codex-multimodal-bot ./cmd/bot
+./bin/discord-codex-multimodal-bot
 ```
 
 テスト（C コンパイラ警告が出ても完走します）:

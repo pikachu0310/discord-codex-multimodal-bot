@@ -11,9 +11,9 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/pikachu0310/whisper-discord-bot/internal/audio"
-	"github.com/pikachu0310/whisper-discord-bot/internal/transcript"
-	"github.com/pikachu0310/whisper-discord-bot/internal/whisper"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/audio"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/transcript"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/whisper"
 )
 
 const (

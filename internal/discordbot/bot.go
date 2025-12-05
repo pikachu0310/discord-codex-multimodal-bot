@@ -8,10 +8,10 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/pikachu0310/whisper-discord-bot/internal/chat"
-	"github.com/pikachu0310/whisper-discord-bot/internal/codex"
-	"github.com/pikachu0310/whisper-discord-bot/internal/voice"
-	"github.com/pikachu0310/whisper-discord-bot/internal/whisper"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/chat"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/codex"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/voice"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/whisper"
 )
 
 // Bot wires event handlers and sub-systems (voice transcription, chat, etc).

@@ -41,27 +41,7 @@ func (c Client) Send(ctx context.Context, sessionID, prompt string, onUpdate fun
 
 	log.Printf("[codex] exec args=%v session=%s prompt_preview=%s", args, sessionID, preview(prompt))
 
-	reply, newSession, err := c.runOnce(ctx, args, sessionID, onUpdate)
-	if err == nil {
-		return reply, newSession, nil
-	}
-
-	if c.Model != "" {
-		if newSession != "" {
-			sessionID = newSession
-		}
-		if onUpdate != nil {
-			onUpdate(fmt.Sprintf("⚠️ モデル %s で失敗したためデフォルト設定で再試行します: %v", c.Model, err))
-		}
-		noModel := filterModelArgs(args)
-		log.Printf("[codex] retrying without model after failure: %v (args=%v)", err, noModel)
-		reply2, session2, err2 := c.runOnce(ctx, noModel, sessionID, onUpdate)
-		if err2 == nil {
-			return reply2, session2, nil
-		}
-		return reply2, session2, fmt.Errorf("fallback without model also failed: %w", err2)
-	}
-	return reply, newSession, err
+	return c.runOnce(ctx, args, sessionID, onUpdate)
 }
 
 type codexEvent struct {
@@ -95,54 +75,77 @@ type codexEventItem struct {
 	Command    string `json:"command,omitempty"`
 }
 
-func parseCodexJSONLines(output string, onUpdate func(string)) (string, string) {
-	var (
-		textBuilder strings.Builder
-		sessionID   string
-		agentMsg    string
-	)
+type codexParseState struct {
+	textBuilder strings.Builder
+	sessionID   string
+	agentMsg    string
+	onUpdate    func(string)
+}
 
+func newCodexParseState(onUpdate func(string)) *codexParseState {
+	return &codexParseState{
+		onUpdate: onUpdate,
+	}
+}
+
+func (p *codexParseState) consume(rawLine string) {
+	line := strings.TrimSpace(rawLine)
+	if line == "" {
+		return
+	}
+	var evt codexEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		// fallback: not JSON, append raw line
+		p.textBuilder.WriteString(line)
+		p.textBuilder.WriteString("\n")
+		return
+	}
+	p.updateSession(evt)
+
+	if p.onUpdate != nil {
+		if summary := summarizeEvent(evt); summary != "" {
+			p.onUpdate(summary)
+		}
+	}
+
+	if evt.Item != nil && evt.Item.Type == "agent_message" && strings.TrimSpace(evt.Item.Text) != "" {
+		p.agentMsg = evt.Item.Text
+	}
+	p.textBuilder.WriteString(extractText(evt))
+}
+
+func (p *codexParseState) updateSession(evt codexEvent) {
+	if sid := evt.SessionID; sid != "" {
+		p.sessionID = sid
+	}
+	if evt.Session != nil && evt.Session.ID != "" {
+		p.sessionID = evt.Session.ID
+	}
+	if evt.Item != nil && evt.Item.SessionID != "" {
+		p.sessionID = evt.Item.SessionID
+	}
+	if evt.ThreadID != "" {
+		p.sessionID = evt.ThreadID
+	}
+}
+
+func (p *codexParseState) result() (string, string) {
+	if strings.TrimSpace(p.agentMsg) != "" {
+		return strings.TrimSpace(p.agentMsg), p.sessionID
+	}
+	return strings.TrimSpace(p.textBuilder.String()), p.sessionID
+}
+
+func parseCodexJSONLines(output string, onUpdate func(string)) (string, string) {
+	parser := newCodexParseState(onUpdate)
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var evt codexEvent
-		if err := json.Unmarshal([]byte(line), &evt); err != nil {
-			// fallback: not JSON, append raw line
-			textBuilder.WriteString(line)
-			textBuilder.WriteString("\n")
-			continue
-		}
-		if sid := evt.SessionID; sid != "" {
-			sessionID = sid
-		}
-		if evt.Session != nil && evt.Session.ID != "" {
-			sessionID = evt.Session.ID
-		}
-		if evt.Item != nil && evt.Item.SessionID != "" {
-			sessionID = evt.Item.SessionID
-		}
-		if evt.ThreadID != "" {
-			sessionID = evt.ThreadID
-		}
-
-		if onUpdate != nil {
-			if summary := summarizeEvent(evt); summary != "" {
-				onUpdate(summary)
-			}
-		}
-
-		if evt.Item != nil && evt.Item.Type == "agent_message" && strings.TrimSpace(evt.Item.Text) != "" {
-			agentMsg = evt.Item.Text
-		}
-		textBuilder.WriteString(extractText(evt))
+		parser.consume(scanner.Text())
 	}
-	if strings.TrimSpace(agentMsg) != "" {
-		return strings.TrimSpace(agentMsg), sessionID
+	if err := scanner.Err(); err != nil {
+		log.Printf("failed to scan codex output: %v", err)
 	}
-	return strings.TrimSpace(textBuilder.String()), sessionID
+	return parser.result()
 }
 
 func summarizeEvent(evt codexEvent) string {
@@ -204,42 +207,43 @@ func eventDetail(evt codexEvent) string {
 	return ""
 }
 
-func filterModelArgs(args []string) []string {
-	out := make([]string, 0, len(args))
-	skip := false
-	for _, a := range args {
-		if skip {
-			skip = false
-			continue
-		}
-		if a == "--model" {
-			skip = true
-			continue
-		}
-		out = append(out, a)
-	}
-	return out
-}
-
 func (c Client) runOnce(ctx context.Context, args []string, sessionID string, onUpdate func(string)) (string, string, error) {
 	cmd := exec.CommandContext(ctx, "codex", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", sessionID, fmt.Errorf("failed to open stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	runErr := cmd.Run()
+	parser := newCodexParseState(onUpdate)
 
-	outStr := stdout.String()
-	parsedText, discoveredSession := parseCodexJSONLines(outStr, onUpdate)
-	if parsedText == "" {
-		parsedText = strings.TrimSpace(outStr)
+	if err := cmd.Start(); err != nil {
+		return "", sessionID, fmt.Errorf("failed to start codex exec: %w", err)
 	}
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
+	for scanner.Scan() {
+		parser.consume(scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("failed to read codex stdout: %v", err)
+	}
+
+	runErr := cmd.Wait()
+
+	parsedText, discoveredSession := parser.result()
 	if discoveredSession != "" {
 		sessionID = discoveredSession
 	}
 	if runErr != nil {
 		errText := strings.TrimSpace(stderr.String())
 		log.Printf("[codex] exec failed code=%v stderr=%s output_preview=%s", runErr, errText, preview(parsedText))
+		if parsedText != "" {
+			// Partial output exists; surface it while logging the failure.
+			return parsedText, sessionID, nil
+		}
 		return parsedText, sessionID, fmt.Errorf("codex exec failed: %w (stderr=%s output=%s)", runErr, errText, preview(parsedText))
 	}
 	if parsedText == "" {

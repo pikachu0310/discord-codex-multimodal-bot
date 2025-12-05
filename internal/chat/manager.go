@@ -10,7 +10,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/pikachu0310/whisper-discord-bot/internal/codex"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/codex"
 )
 
 const (

@@ -9,10 +9,10 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/pikachu0310/whisper-discord-bot/internal/codex"
-	"github.com/pikachu0310/whisper-discord-bot/internal/config"
-	"github.com/pikachu0310/whisper-discord-bot/internal/discordbot"
-	"github.com/pikachu0310/whisper-discord-bot/internal/whisper"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/codex"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/config"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/discordbot"
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/whisper"
 )
 
 func main() {

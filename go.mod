@@ -1,4 +1,4 @@
-module github.com/pikachu0310/whisper-discord-bot
+module github.com/pikachu0310/discord-codex-multimodal-bot
 
 go 1.24.2
 
