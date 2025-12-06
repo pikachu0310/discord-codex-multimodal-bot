@@ -124,6 +124,7 @@ func (m *Manager) HandleInteraction(ic *discordgo.InteractionCreate) {
 	switch data.Name {
 	case commandNameChat, commandNameStart:
 		if len(data.Options) == 0 {
+			m.respond(ic, "メッセージが見つかりませんでした。コマンドを再実行してください。", true)
 			return
 		}
 		var (
@@ -139,7 +140,7 @@ func (m *Manager) HandleInteraction(ic *discordgo.InteractionCreate) {
 			}
 		}
 		if msg == "" {
-			m.followup(ic, "空のメッセージは送信できません。", true)
+			m.respond(ic, "空のメッセージは送信できません。", true)
 			return
 		}
 		go m.handleChatCommand(ic, msg, verbose)
@@ -147,11 +148,12 @@ func (m *Manager) HandleInteraction(ic *discordgo.InteractionCreate) {
 		go m.handleResetCommand(ic)
 	case commandNameThread:
 		if len(data.Options) == 0 {
+			m.respond(ic, "スレッド開始メッセージがありません。", true)
 			return
 		}
 		msg := strings.TrimSpace(data.Options[0].StringValue())
 		if msg == "" {
-			m.followup(ic, "空のメッセージは送信できません。", true)
+			m.respond(ic, "空のメッセージは送信できません。", true)
 			return
 		}
 		go m.handleThreadCommand(ic, msg)
@@ -261,10 +263,12 @@ func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content str
 
 func (m *Manager) handleResetCommand(ic *discordgo.InteractionCreate) {
 	channelID := ic.ChannelID
+	response := "このチャンネルの会話履歴をリセットしました。次の /chat から新規セッションになります。"
 	if err := m.store.DeleteChannel(channelID); err != nil {
 		log.Printf("reset failed: %v", err)
+		response = fmt.Sprintf("会話履歴のリセットに失敗しました: %v", err)
 	}
-	m.followup(ic, "このチャンネルの会話履歴をリセットしました。次の /chat から新規セッションになります。", true)
+	m.respond(ic, response, true)
 }
 
 func (m *Manager) handleThreadCommand(ic *discordgo.InteractionCreate, content string) {
@@ -397,6 +401,26 @@ func (m *Manager) getLock(id string) *sync.Mutex {
 	lk := &sync.Mutex{}
 	m.locks[id] = lk
 	return lk
+}
+
+func (m *Manager) respond(ic *discordgo.InteractionCreate, content string, ephemeral bool) {
+	if ic == nil {
+		return
+	}
+	flags := discordgo.MessageFlags(0)
+	if ephemeral {
+		flags = discordgo.MessageFlagsEphemeral
+	}
+	err := m.session.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: content,
+			Flags:   flags,
+		},
+	})
+	if err != nil && !strings.Contains(err.Error(), "Interaction has already been acknowledged") {
+		log.Printf("failed to respond to interaction: %v", err)
+	}
 }
 
 func (m *Manager) followup(ic *discordgo.InteractionCreate, content string, ephemeral bool) {

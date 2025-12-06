@@ -1,6 +1,6 @@
 # discord-codex-multimodal-bot
 
-Discord の VC 音声をリアルタイムに文字起こししつつ、Codex CLI や Gemini 連携でチャンネル/スレッド対話を自動化する Go 製マルチモーダルボットです。音声字幕パイプラインとチャットパイプラインを分離し、`/join` `/leave` `/chat` `/start` `/reset` `/thread` を提供しています。
+Discord の VC 音声をリアルタイムに文字起こししつつ、Codex CLI や Gemini 連携でチャンネル/スレッド対話を自動化する Go 製マルチモーダルボットです。音声字幕パイプラインとチャットパイプラインを分離し、`/join` `/leave` `/chat` `/start` `/reset` `/thread` `/alarm` を提供しています。
 
 ## できること
 
@@ -8,6 +8,7 @@ Discord の VC 音声をリアルタイムに文字起こししつつ、Codex CL
 - チャンネル会話: テキストチャンネルで `/chat {メッセージ}` を送ると、そのチャンネル専用の Codex スレッドを作成・継続利用。セッション ID はファイルに保存され、再起動後も継続します。
 - リセット: `/reset` でそのチャンネルの Codex セッション ID を破棄。次の `/chat` から新規会話。
 - スレッド会話: `/thread {メッセージ}` で Discord スレッドを作成し、以降そのスレッド内の発言は自動で Codex に送信・返信。GEMINI_API_KEY があればプロンプト内容からスレッド名を生成、無ければ作成日時+IDで命名。
+- アラーム通知: `/alarm {メッセージ}` で Home Assistant のイベントを発火し、スマホ通知やアラームをトリガー。
 - どちらのパイプラインもエラー時はログ出力してスキップし、ボット全体は停止しません。
 
 ## 必要要件
@@ -45,6 +46,9 @@ docker run --publish 8000:8000 \
 | `CODEX_MODEL` | ❌ | `gpt-5.1` | Codex に渡すモデル名 |
 | `CODEX_REASONING_EFFORT` | ❌ | `minimal` | Codex の reasoning effort（設定が無ければ Codex デフォルト） |
 | `GEMINI_API_KEY` | ❌ | - | スレッド名生成に使用（未設定なら日時+IDで命名） |
+| `HOME_ASSISTANT_BASE_URL` | ❌ | - | `/alarm` でイベントを送る Home Assistant のベース URL（例: `https://example.ui.nabu.casa`） |
+| `HOME_ASSISTANT_TOKEN` | ❌ | - | Home Assistant の Long-Lived Access Token（`/alarm` 用） |
+| `HOME_ASSISTANT_ALARM_EVENT` | ❌ | `discord_alarm` | `/alarm` が POST するイベント名 |
 
 Fish で直接設定する例:
 
@@ -85,6 +89,7 @@ go test ./...
 - `/chat {メッセージ}`（`/start` も同じ動き）: 現在のテキストチャンネルで Codex と会話。セッションはチャンネルごとに保存され、再起動後も継続。
 - `/reset`: そのチャンネルの Codex セッションを破棄。次回 `/chat` で新規開始。
 - `/thread {メッセージ}`: 新しい Discord スレッドを作成し、以降スレッド内の発言を自動で Codex に送信して返信。スレッド内では `/chat` は不要。GEMINI_API_KEY があればプロンプト内容からスレッド名を生成。
+- `/alarm {メッセージ}`: Home Assistant の `/api/events/<HOME_ASSISTANT_ALARM_EVENT>` に POST。Automation で受け取りスマホ通知やアラームに接続できます。
 
 ### 音声パイプラインの流れ
 1. SSRC ごとに Opus を受信 → PCM16 (48kHz/Mono) へデコード。

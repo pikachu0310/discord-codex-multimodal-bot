@@ -9,6 +9,7 @@
 ## 音声字幕パイプライン
 - `internal/discordbot/bot.go`  
   - Slash コマンド `/join` `/leave` を受け取り、`voice.Manager` を操作。
+  - `/alarm` を受け取ったら Home Assistant 連携（`internal/alarm`）を起動。
 - `internal/voice/manager.go`  
   - Discord VC への参加/退出、Opus 受信の開始。
   - `audio.Segmenter` で 1 秒無音区切り、WAV 化して `whisper.Client` へ送信。
@@ -30,11 +31,18 @@
 - `internal/codex/namer.go`  
   - GEMINI_API_KEY があれば Gemini API でスレッド名を生成。無ければ `thread-YYYYMMDD-HHmm-<id末尾8桁>`。
 
+## Home Assistant アラーム
+- `internal/alarm/client.go`  
+  - Home Assistant の `/api/events/<HOME_ASSISTANT_ALARM_EVENT>` へ `POST`。Authorization に Long-Lived Token を付与。
+- `.env`  
+  - `HOME_ASSISTANT_BASE_URL`, `HOME_ASSISTANT_TOKEN`, `HOME_ASSISTANT_ALARM_EVENT` が揃っている場合のみ `/alarm` を有効化。
+
 ## コマンド一覧
 - `/join` / `/leave` … VC への参加/退出（音声字幕）
 - `/chat {message}` / `/start {message}` … チャンネル単位で Codex と会話。セッション永続化。
 - `/reset` … チャンネルの Codex セッションを破棄。
 - `/thread {message}` … Discord スレッドを作成し、そのスレッド内で自動的に会話継続。
+- `/alarm {message}` … Home Assistant へイベントを送信し、スマホ通知などをトリガー。
 
 ## 環境変数（主要）
 - `DISCORD_TOKEN`, `TRANSCRIPT_CHANNEL_ID`
@@ -43,6 +51,7 @@
 - `CODEX_MODEL`（デフォルト `gpt-5.1`）
 - `CODEX_REASONING_EFFORT`（デフォルト `minimal`。空なら Codex デフォルト）
 - `GEMINI_API_KEY`（任意、スレッド名生成用）
+- `/alarm` 用に `HOME_ASSISTANT_BASE_URL`, `HOME_ASSISTANT_TOKEN`, `HOME_ASSISTANT_ALARM_EVENT`（未設定でも他機能は動作）
 
 ## テスト・ビルド
 - `go test ./...`（`layeh.com/gopus` の C 警告が出ても完走します）

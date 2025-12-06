@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/alarm"
 	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/chat"
 	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/codex"
 	"github.com/pikachu0310/discord-codex-multimodal-bot/internal/voice"
@@ -19,10 +21,13 @@ type Bot struct {
 	session *discordgo.Session
 	voice   *voice.Manager
 	chat    *chat.Manager
+	alarm   *alarm.Client
 }
 
+const commandNameAlarm = "alarm"
+
 // New creates a ready-to-run bot with voice transcription enabled.
-func New(token, transcriptChannelID string, whisperClient *whisper.Client, store *codex.Store, namer *codex.ThreadNamer, codexClient codex.Client) (*Bot, error) {
+func New(token, transcriptChannelID string, whisperClient *whisper.Client, store *codex.Store, namer *codex.ThreadNamer, codexClient codex.Client, alarmClient *alarm.Client) (*Bot, error) {
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return nil, fmt.Errorf("create discord session: %w", err)
@@ -40,6 +45,7 @@ func New(token, transcriptChannelID string, whisperClient *whisper.Client, store
 		session: session,
 		voice:   voice.NewManager(session, whisperClient, transcriptChannelID),
 		chat:    chat.NewManager(session, store, namer, codexClient),
+		alarm:   alarmClient,
 	}
 
 	session.AddHandler(bot.onReady)
@@ -93,9 +99,69 @@ func (b *Bot) handleInteraction(s *discordgo.Session, ic *discordgo.InteractionC
 			return
 		}
 		b.respond(ic, "退出しました。")
+	case commandNameAlarm:
+		b.handleAlarmCommand(ic)
 	default:
 		b.chat.HandleInteraction(ic)
 	}
+}
+
+func (b *Bot) handleAlarmCommand(ic *discordgo.InteractionCreate) {
+	data := ic.ApplicationCommandData()
+	var message string
+	for _, opt := range data.Options {
+		if opt.Name == "message" {
+			message = strings.TrimSpace(opt.StringValue())
+			break
+		}
+	}
+	if message == "" {
+		b.respondEphemeral(ic, "アラーム内容を入力してください。")
+		return
+	}
+	if b.alarm == nil {
+		b.respondEphemeral(ic, "/alarm は現在無効化されています。HOME_ASSISTANT_* の設定を確認してください。")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	payload := alarm.Payload{
+		Message:     message,
+		GuildID:     ic.GuildID,
+		ChannelID:   ic.ChannelID,
+		TriggeredAt: time.Now(),
+	}
+
+	if ch, err := b.session.State.Channel(ic.ChannelID); err == nil && ch != nil {
+		payload.ChannelName = ch.Name
+	} else if ch, err := b.session.Channel(ic.ChannelID); err == nil && ch != nil {
+		payload.ChannelName = ch.Name
+	}
+
+	user := ic.User
+	if user == nil && ic.Member != nil {
+		user = ic.Member.User
+	}
+	if user != nil {
+		payload.TriggeredByID = user.ID
+		payload.TriggeredBy = user.Username
+		if ic.Member != nil && ic.Member.Nick != "" {
+			payload.TriggeredBy = ic.Member.Nick
+		} else if user.GlobalName != "" {
+			payload.TriggeredBy = user.GlobalName
+		} else if user.Discriminator != "" && user.Discriminator != "0" {
+			payload.TriggeredBy = fmt.Sprintf("%s#%s", user.Username, user.Discriminator)
+		}
+	}
+
+	if err := b.alarm.Trigger(ctx, payload); err != nil {
+		log.Printf("failed to trigger alarm: %v", err)
+		b.respondEphemeral(ic, fmt.Sprintf("アラーム送信に失敗しました: %v", err))
+		return
+	}
+	b.respondEphemeral(ic, "アラームを送信しました。")
 }
 
 func (b *Bot) handleThreadMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -122,6 +188,18 @@ func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
 		{
 			Name:        "leave",
 			Description: "VC から退出します",
+		},
+		{
+			Name:        commandNameAlarm,
+			Description: "スマホにアラームを送信します",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "message",
+					Description: "アラーム内容（例: 10 分後に休憩）",
+					Required:    true,
+				},
+			},
 		},
 	}
 	for _, cmd := range commands {
