@@ -27,6 +27,7 @@ import (
 
 const (
 	encryptionModeXSalsa20Poly1305  = "xsalsa20_poly1305"
+	encryptionModeAEAD256GCM        = "aead_aes256_gcm"
 	encryptionModeAEAD256GCMRtpSize = "aead_aes256_gcm_rtpsize"
 )
 
@@ -598,6 +599,22 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			return
 		}
 
+		if mode == encryptionModeAEAD256GCM {
+			block, err := aes.NewCipher(v.op4.SecretKey[:])
+			if err != nil {
+				v.log(LogError, "create AES cipher failed: %s", err)
+				return
+			}
+			aead, err := cipher.NewGCM(block)
+			if err != nil {
+				v.log(LogError, "create GCM failed: %s", err)
+				return
+			}
+			v.aead = aead
+			v.log(LogInformational, "voice encryption mode set to %s", mode)
+			return
+		}
+
 		if mode != "" && mode != encryptionModeXSalsa20Poly1305 {
 			v.log(LogError, "unsupported encryption mode %s", mode)
 		}
@@ -917,6 +934,22 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		var sendbuf []byte
 		mode := v.currentEncryptionMode()
 		switch mode {
+		case encryptionModeAEAD256GCM:
+			v.Lock()
+			aead := v.aead
+			counter := v.nonceCounter
+			v.nonceCounter++
+			v.Unlock()
+
+			if aead == nil {
+				v.log(LogError, "aead not initialized for encryption mode %s", mode)
+				continue
+			}
+			binary.LittleEndian.PutUint32(nonce[:4], counter)
+
+			encrypted := aead.Seal(nil, nonce, recvbuf, udpHeader)
+			sendbuf = append(sendbuf, udpHeader...)
+			sendbuf = append(sendbuf, encrypted...)
 		case encryptionModeAEAD256GCMRtpSize:
 			v.Lock()
 			aead := v.aead
@@ -1040,6 +1073,26 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 		// decrypt opus data
 		mode := v.currentEncryptionMode()
 		switch mode {
+		case encryptionModeAEAD256GCM:
+			ciphertext := recvbuf[12:rlen]
+			for i := range nonce {
+				nonce[i] = 0
+			}
+			binary.LittleEndian.PutUint32(nonce[:4], uint32(p.Sequence))
+
+			v.RLock()
+			aead := v.aead
+			v.RUnlock()
+			if aead == nil {
+				v.log(LogError, "aead not initialized for encryption mode %s", mode)
+				continue
+			}
+
+			if opus, err := aead.Open(nil, nonce[:], ciphertext, recvbuf[0:12]); err == nil {
+				p.Opus = opus
+			} else {
+				continue
+			}
 		case encryptionModeAEAD256GCMRtpSize:
 			ciphertext := recvbuf[12:rlen]
 			if len(ciphertext) < 4 {
@@ -1109,6 +1162,7 @@ func (v *VoiceConnection) currentEncryptionMode() string {
 
 func selectEncryptionMode(offered []string) (string, error) {
 	preferred := []string{
+		encryptionModeAEAD256GCM,
 		encryptionModeAEAD256GCMRtpSize,
 		encryptionModeXSalsa20Poly1305,
 	}
