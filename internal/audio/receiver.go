@@ -149,8 +149,6 @@ func (r *Receiver) handlePacket(pkt *discordgo.Packet, getDecoder func(uint32) (
 		return
 	}
 
-	r.logger.Printf("opcode recv: resolved user=%s ssrc=%d seq=%d samples=%d", userID, pkt.SSRC, pkt.Sequence, len(pcm))
-
 	r.segmenter.AddSamples(userID, pcm)
 }
 

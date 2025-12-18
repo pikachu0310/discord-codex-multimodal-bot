@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -65,6 +66,7 @@ func (c *Client) Transcribe(ctx context.Context, filePath string) (string, error
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
+	log.Printf("whisper: sending transcription request url=%s file=%s", endpoint, filepath.Base(filePath))
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("transcribe request: %w", err)

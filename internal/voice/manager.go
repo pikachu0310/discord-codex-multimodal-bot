@@ -20,7 +20,7 @@ const (
 	messageWindow       = 2 * time.Minute
 	silenceThreshold    = 1 * time.Second
 	minSegmentDuration  = 250 * time.Millisecond
-	minAverageAmplitude = 600
+	minAverageAmplitude = 200
 )
 
 // Manager is responsible for joining/leaving voice channels and handling transcription.
