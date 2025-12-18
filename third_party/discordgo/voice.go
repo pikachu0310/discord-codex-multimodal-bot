@@ -10,6 +10,8 @@
 package discordgo
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -21,6 +23,11 @@ import (
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/nacl/secretbox"
+)
+
+const (
+	encryptionModeXSalsa20Poly1305  = "xsalsa20_poly1305"
+	encryptionModeAEAD256GCMRtpSize = "aead_aes256_gcm_rtpsize"
 )
 
 // ------------------------------------------------------------------------------------------------
@@ -63,8 +70,11 @@ type VoiceConnection struct {
 	// Used to pass the sessionid from onVoiceStateUpdate
 	// sessionRecv chan string UNUSED ATM
 
-	op4 voiceOP4
-	op2 voiceOP2
+	encryptionMode string
+	aead           cipher.AEAD
+	nonceCounter   uint32
+	op4            voiceOP4
+	op2            voiceOP2
 
 	voiceSpeakingUpdateHandlers []VoiceSpeakingUpdateHandler
 	ssrcMappingHandlers         []SSRCMappingHandler
@@ -564,6 +574,33 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			v.log(LogError, "OP4 unmarshall error, %s, %s", err, string(e.RawData))
 			return
 		}
+		mode := v.encryptionMode
+		if v.op4.Mode != "" {
+			mode = v.op4.Mode
+		}
+		v.encryptionMode = mode
+		v.aead = nil
+		v.nonceCounter = 0
+
+		if mode == encryptionModeAEAD256GCMRtpSize {
+			block, err := aes.NewCipher(v.op4.SecretKey[:])
+			if err != nil {
+				v.log(LogError, "create AES cipher failed: %s", err)
+				return
+			}
+			aead, err := cipher.NewGCM(block)
+			if err != nil {
+				v.log(LogError, "create GCM failed: %s", err)
+				return
+			}
+			v.aead = aead
+			v.log(LogInformational, "voice encryption mode set to %s", mode)
+			return
+		}
+
+		if mode != "" && mode != encryptionModeXSalsa20Poly1305 {
+			v.log(LogError, "unsupported encryption mode %s", mode)
+		}
 		return
 
 	case 5:
@@ -662,7 +699,7 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 type voiceUDPData struct {
 	Address string `json:"address"` // Public IP of machine running this code
 	Port    uint16 `json:"port"`    // UDP Port of machine running this code
-	Mode    string `json:"mode"`    // always "xsalsa20_poly1305"
+	Mode    string `json:"mode"`    // selected encryption mode
 }
 
 type voiceUDPD struct {
@@ -699,6 +736,13 @@ func (v *VoiceConnection) udpOpen() (err error) {
 	if v.endpoint == "" {
 		return fmt.Errorf("empty endpoint")
 	}
+
+	mode, err := selectEncryptionMode(v.op2.Modes)
+	if err != nil {
+		return fmt.Errorf("no supported encryption mode offered: %w", err)
+	}
+	v.encryptionMode = mode
+	v.log(LogInformational, "using voice encryption mode %s", mode)
 
 	host := v.op2.IP + ":" + strconv.Itoa(v.op2.Port)
 	addr, err := net.ResolveUDPAddr("udp", host)
@@ -757,7 +801,7 @@ func (v *VoiceConnection) udpOpen() (err error) {
 
 	// Take the data from above and send it back to Discord to finalize
 	// the UDP connection handshake.
-	data := voiceUDPOp{1, voiceUDPD{"udp", voiceUDPData{ip, port, "xsalsa20_poly1305"}}}
+	data := voiceUDPOp{1, voiceUDPD{"udp", voiceUDPData{ip, port, mode}}}
 
 	v.wsMutex.Lock()
 	err = v.wsConn.WriteJSON(data)
@@ -833,7 +877,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 	var recvbuf []byte
 	var ok bool
 	udpHeader := make([]byte, 12)
-	var nonce [24]byte
+	nonce := make([]byte, 12)
 
 	// build the parts that don't change in the udpHeader
 	udpHeader[0] = 0x80
@@ -870,11 +914,37 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		binary.BigEndian.PutUint16(udpHeader[2:], sequence)
 		binary.BigEndian.PutUint32(udpHeader[4:], timestamp)
 
-		// encrypt the opus data
-		copy(nonce[:], udpHeader)
-		v.RLock()
-		sendbuf := secretbox.Seal(udpHeader, recvbuf, &nonce, &v.op4.SecretKey)
-		v.RUnlock()
+		var sendbuf []byte
+		mode := v.currentEncryptionMode()
+		switch mode {
+		case encryptionModeAEAD256GCMRtpSize:
+			v.Lock()
+			aead := v.aead
+			counter := v.nonceCounter
+			v.nonceCounter++
+			v.Unlock()
+
+			if aead == nil {
+				v.log(LogError, "aead not initialized for encryption mode %s", mode)
+				continue
+			}
+			binary.LittleEndian.PutUint32(nonce[:4], counter)
+
+			encrypted := aead.Seal(nil, nonce, recvbuf, udpHeader)
+			sendbuf = append(sendbuf, udpHeader...)
+			sendbuf = append(sendbuf, encrypted...)
+			sendbuf = append(sendbuf, nonce[:4]...)
+		case encryptionModeXSalsa20Poly1305:
+			var xsNonce [24]byte
+			copy(xsNonce[:], udpHeader)
+			v.RLock()
+			secretKey := v.op4.SecretKey
+			v.RUnlock()
+			sendbuf = secretbox.Seal(udpHeader, recvbuf, &xsNonce, &secretKey)
+		default:
+			v.log(LogWarning, "unsupported encryption mode for sending: %s", mode)
+			continue
+		}
 
 		// block here until we're exactly at the right time :)
 		// Then send rtp audio packet to Discord over UDP
@@ -927,7 +997,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 	}
 
 	recvbuf := make([]byte, 1024)
-	var nonce [24]byte
+	var nonce [12]byte
 
 	for {
 		rlen, err := udpConn.Read(recvbuf)
@@ -968,11 +1038,45 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 		p.SSRC = binary.BigEndian.Uint32(recvbuf[8:12])
 		p.UserID = v.userIDForSSRC(p.SSRC)
 		// decrypt opus data
-		copy(nonce[:], recvbuf[0:12])
+		mode := v.currentEncryptionMode()
+		switch mode {
+		case encryptionModeAEAD256GCMRtpSize:
+			ciphertext := recvbuf[12:rlen]
+			if len(ciphertext) < 4 {
+				continue
+			}
+			nonceCounter := ciphertext[len(ciphertext)-4:]
+			cipherText := ciphertext[:len(ciphertext)-4]
+			for i := range nonce {
+				nonce[i] = 0
+			}
+			binary.LittleEndian.PutUint32(nonce[:4], binary.LittleEndian.Uint32(nonceCounter))
 
-		if opus, ok := secretbox.Open(nil, recvbuf[12:rlen], &nonce, &v.op4.SecretKey); ok {
-			p.Opus = opus
-		} else {
+			v.RLock()
+			aead := v.aead
+			v.RUnlock()
+			if aead == nil {
+				v.log(LogError, "aead not initialized for encryption mode %s", mode)
+				continue
+			}
+
+			if opus, err := aead.Open(nil, nonce[:], cipherText, recvbuf[0:12]); err == nil {
+				p.Opus = opus
+			} else {
+				continue
+			}
+		case encryptionModeXSalsa20Poly1305:
+			var xsNonce [24]byte
+			copy(xsNonce[:], recvbuf[0:12])
+			v.RLock()
+			secretKey := v.op4.SecretKey
+			v.RUnlock()
+			if opus, ok := secretbox.Open(nil, recvbuf[12:rlen], &xsNonce, &secretKey); ok {
+				p.Opus = opus
+			} else {
+				continue
+			}
+		default:
 			continue
 		}
 
@@ -995,6 +1099,28 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 			}
 		}
 	}
+}
+
+func (v *VoiceConnection) currentEncryptionMode() string {
+	v.RLock()
+	defer v.RUnlock()
+	return v.encryptionMode
+}
+
+func selectEncryptionMode(offered []string) (string, error) {
+	preferred := []string{
+		encryptionModeAEAD256GCMRtpSize,
+		encryptionModeXSalsa20Poly1305,
+	}
+
+	for _, candidate := range preferred {
+		for _, mode := range offered {
+			if mode == candidate {
+				return candidate, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no supported encryption modes offered: %v", offered)
 }
 
 // Reconnect will close down a voice connection then immediately try to
