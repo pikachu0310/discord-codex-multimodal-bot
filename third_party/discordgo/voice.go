@@ -937,15 +937,14 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		case encryptionModeAEAD256GCM:
 			v.Lock()
 			aead := v.aead
-			counter := v.nonceCounter
-			v.nonceCounter++
 			v.Unlock()
 
 			if aead == nil {
 				v.log(LogError, "aead not initialized for encryption mode %s", mode)
 				continue
 			}
-			binary.LittleEndian.PutUint32(nonce[:4], counter)
+
+			copy(nonce[:], udpHeader)
 
 			encrypted := aead.Seal(nil, nonce, recvbuf, udpHeader)
 			sendbuf = append(sendbuf, udpHeader...)
@@ -1029,7 +1028,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 		return
 	}
 
-	recvbuf := make([]byte, 1024)
+	recvbuf := make([]byte, 2048)
 	var nonce [12]byte
 
 	for {
@@ -1075,10 +1074,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 		switch mode {
 		case encryptionModeAEAD256GCM:
 			ciphertext := recvbuf[12:rlen]
-			for i := range nonce {
-				nonce[i] = 0
-			}
-			binary.LittleEndian.PutUint32(nonce[:4], uint32(p.Sequence))
+			copy(nonce[:], recvbuf[0:12])
 
 			v.RLock()
 			aead := v.aead
