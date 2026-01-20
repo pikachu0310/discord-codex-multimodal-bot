@@ -177,7 +177,7 @@ func (m *Manager) HandleThreadMessage(msg *discordgo.MessageCreate) {
 
 	progress := newProgress("Codex").WithInput(content)
 	progress.OnUpdate = m.makeProgressUpdater(msg.ChannelID, nil, "")
-	progress.OnUpdate(progress.Render())
+	progress.OnUpdate(progress.Snapshot())
 
 	go m.sendAndReply(msg.ChannelID, threadSession, content, progress, func(newSessionID string) {
 		effective := newSessionID
@@ -203,8 +203,12 @@ func (m *Manager) ChatInChannel(channelID, content string) (string, error) {
 	progress := newProgress("Codex").WithInput(content)
 	progress.SetVerbose(false)
 	var final string
-	progress.OnUpdate = func(text string) {
-		final = text
+	progress.OnUpdate = func(text progressSnapshot) {
+		if text.Done {
+			final = renderFinalCombined(text)
+			return
+		}
+		final = renderProgress(text)
 	}
 
 	if err := m.sendAndReply(channelID, sessionID, content, progress, func(newSessionID string) {
@@ -245,7 +249,7 @@ func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content str
 	progress.SetVerbose(verbose)
 
 	progress.OnUpdate = m.makeProgressUpdater(channelID, ic.Interaction, "")
-	progress.OnUpdate(progress.Render())
+	progress.OnUpdate(progress.Snapshot())
 
 	_ = m.sendAndReply(channelID, sessionID, content, progress, func(newSessionID string) {
 		effective := newSessionID
@@ -314,7 +318,7 @@ func (m *Manager) handleThreadCommand(ic *discordgo.InteractionCreate, content s
 
 	progress := newProgress("Codex").WithInput(content)
 	progress.OnUpdate = m.makeProgressUpdater(thread.ID, nil, "")
-	progress.OnUpdate(progress.Render())
+	progress.OnUpdate(progress.Snapshot())
 
 	_ = m.sendAndReply(thread.ID, m.store.GetThread(thread.ID), content, progress, func(newSessionID string) {
 		effective := newSessionID
@@ -355,13 +359,13 @@ func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *pr
 	}
 	progress.AddStep(fmt.Sprintf("🚀 実行開始 (model: %s / reasoning: %s / session: %s)", m.codex.Model, reasoning, sessionLabel))
 	if progress.OnUpdate != nil {
-		progress.OnUpdate(progress.Render())
+		progress.OnUpdate(progress.Snapshot())
 	}
 
 	update := func(line string) {
 		progress.AddStep(line)
 		if progress.OnUpdate != nil {
-			progress.OnUpdate(progress.Render())
+			progress.OnUpdate(progress.Snapshot())
 		}
 	}
 
@@ -372,13 +376,13 @@ func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *pr
 		log.Printf("codex send failed: %v", err)
 		progress.SetFinal(fmt.Sprintf("⚠️ Codex への送信に失敗しました: %v", err))
 		if progress.OnUpdate != nil {
-			progress.OnUpdate(progress.Render())
+			progress.OnUpdate(progress.Snapshot())
 		}
 		return err
 	}
 	progress.SetFinal("🧠 " + reply)
 	if progress.OnUpdate != nil {
-		progress.OnUpdate(progress.Render())
+		progress.OnUpdate(progress.Snapshot())
 	}
 
 	effectiveSession := newSessionID
@@ -446,97 +450,150 @@ type progressUpdater struct {
 	channelID      string
 	messageID      string
 	useInteraction bool
-	overflowSent   bool
+	initialSent    bool
+	finalSent      bool
 }
 
-func (m *Manager) makeProgressUpdater(channelID string, interaction *discordgo.Interaction, messageID string) func(string) {
+func (m *Manager) makeProgressUpdater(channelID string, interaction *discordgo.Interaction, messageID string) func(progressSnapshot) {
 	up := &progressUpdater{
 		session:        m.session,
 		channelID:      channelID,
 		messageID:      messageID,
 		useInteraction: interaction != nil && messageID == "",
 	}
-	return func(content string) {
-		up.update(interaction, content)
+	return func(snapshot progressSnapshot) {
+		up.update(interaction, snapshot)
 	}
 }
 
-func (u *progressUpdater) update(interaction *discordgo.Interaction, content string) {
+func (u *progressUpdater) update(interaction *discordgo.Interaction, snapshot progressSnapshot) {
+	if snapshot.Done {
+		u.sendFinal(interaction, snapshot)
+		return
+	}
+	if !u.initialSent {
+		if u.updateMessage(interaction, renderInitial(snapshot)) {
+			u.initialSent = true
+		}
+		return
+	}
+	_ = u.updateMessage(interaction, renderProgress(snapshot))
+}
+
+func (u *progressUpdater) sendFinal(interaction *discordgo.Interaction, snapshot progressSnapshot) {
+	if u.finalSent {
+		return
+	}
+	u.finalSent = true
+
+	inputSection := buildInputSection(snapshot.Input, progressInputLimit)
+	finalSection := strings.TrimSpace(snapshot.Final)
+	combined := joinBody(inputSection, finalSection)
+	if strings.TrimSpace(combined) == "" {
+		return
+	}
+
+	if runeLen(combined) <= messageChunkLimit {
+		_ = u.updateMessage(interaction, combined)
+		return
+	}
+
+	if inputSection != "" {
+		_ = u.updateMessage(interaction, inputSection)
+	}
+	u.sendReplyChunks(finalSection)
+}
+
+func (u *progressUpdater) updateMessage(interaction *discordgo.Interaction, content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
+
+	if u.messageID != "" {
+		if _, err := u.session.ChannelMessageEdit(u.channelID, u.messageID, content); err != nil {
+			if isLengthError(err) {
+				msg, err2 := u.session.ChannelMessageSend(u.channelID, content)
+				if err2 != nil {
+					log.Printf("failed to send new chunk after length error: %v", err2)
+					return false
+				}
+				u.messageID = msg.ID
+				return true
+			}
+			log.Printf("failed to edit progress message: %v", err)
+			return false
+		}
+		return true
+	}
+
+	if u.useInteraction {
+		msg, err := u.session.InteractionResponseEdit(interaction, &discordgo.WebhookEdit{
+			Content: &content,
+		})
+		if err == nil {
+			if msg != nil {
+				u.messageID = msg.ID
+			}
+			return true
+		}
+		if !isLengthError(err) {
+			log.Printf("failed to edit interaction response: %v", err)
+			return false
+		}
+		u.useInteraction = false
+	}
+
+	msg, err := u.session.ChannelMessageSend(u.channelID, content)
+	if err != nil {
+		log.Printf("failed to send progress message: %v", err)
+		return false
+	}
+	u.messageID = msg.ID
+	return true
+}
+
+func (u *progressUpdater) sendReplyChunks(content string) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return
 	}
-
-	const limit = 1900 // keep a safety margin under 2000
-	chunks := splitContent(content, limit)
+	chunks := splitContent(content, messageChunkLimit)
 	if len(chunks) == 0 {
 		return
 	}
-
-	// If interaction edit is still possible and content fits, try it.
-	if u.useInteraction && !u.overflowSent && len(content) <= limit {
-		_, err := u.session.InteractionResponseEdit(interaction, &discordgo.WebhookEdit{
-			Content: &content,
-		})
-		if err == nil {
-			return
+	var ref *discordgo.MessageReference
+	if u.messageID != "" {
+		ref = &discordgo.MessageReference{
+			MessageID: u.messageID,
+			ChannelID: u.channelID,
 		}
-		if !isLengthError(err) {
-			log.Printf("failed to edit interaction response: %v", err)
-			return
-		}
-		// length overflow -> fall back to channel messages
-		u.useInteraction = false
 	}
-
-	// Overflow handling: send prefix chunks once, then keep editing the last message.
-	if len(content) > limit && !u.overflowSent {
-		for _, c := range chunks[:len(chunks)-1] {
-			msg, err := u.session.ChannelMessageSend(u.channelID, c)
-			if err != nil {
-				log.Printf("failed to send overflow chunk: %v", err)
-				continue
-			}
-			u.messageID = msg.ID
-		}
-		u.overflowSent = true
-	}
-
-	last := chunks[len(chunks)-1]
-
-	if u.messageID == "" {
-		msg, err := u.session.ChannelMessageSend(u.channelID, last)
-		if err != nil {
-			log.Printf("failed to send progress message: %v", err)
+	for _, chunk := range chunks {
+		var err error
+		if ref != nil {
+			_, err = u.session.ChannelMessageSendReply(u.channelID, chunk, ref)
 		} else {
-			u.messageID = msg.ID
+			_, err = u.session.ChannelMessageSend(u.channelID, chunk)
 		}
-		return
-	}
-
-	if _, err := u.session.ChannelMessageEdit(u.channelID, u.messageID, last); err != nil {
-		if isLengthError(err) {
-			msg, err2 := u.session.ChannelMessageSend(u.channelID, last)
-			if err2 != nil {
-				log.Printf("failed to send new chunk after length error: %v", err2)
-				return
-			}
-			u.messageID = msg.ID
-			return
+		if err != nil {
+			log.Printf("failed to send reply chunk: %v", err)
 		}
-		log.Printf("failed to edit progress message: %v", err)
 	}
 }
 
 func splitContent(text string, limit int) []string {
 	var chunks []string
 	var b strings.Builder
+	currentLen := 0
 	for _, r := range text {
-		if b.Len()+len(string(r)) > limit {
+		if currentLen+1 > limit {
 			chunks = append(chunks, b.String())
 			b.Reset()
+			currentLen = 0
 		}
 		b.WriteRune(r)
+		currentLen++
 	}
 	if b.Len() > 0 {
 		chunks = append(chunks, b.String())
