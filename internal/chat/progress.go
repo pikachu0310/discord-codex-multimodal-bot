@@ -13,8 +13,22 @@ type progressBuilder struct {
 	done     bool
 	verbose  bool
 	mu       sync.Mutex
-	OnUpdate func(string)
+	OnUpdate func(progressSnapshot)
 }
+
+type progressSnapshot struct {
+	Input   string
+	Steps   []string
+	Final   string
+	Done    bool
+	Verbose bool
+}
+
+const (
+	progressInputLimit = 1500
+	progressLogLimit   = 400
+	messageChunkLimit  = 1900
+)
 
 func newProgress(model string) *progressBuilder {
 	return &progressBuilder{
@@ -51,51 +65,25 @@ func (p *progressBuilder) SetVerbose(verbose bool) {
 	p.verbose = verbose
 }
 
-func (p *progressBuilder) Render() string {
+func (p *progressBuilder) Snapshot() progressSnapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	steps := append([]string(nil), p.steps...)
+	return progressSnapshot{
+		Input:   p.input,
+		Steps:   steps,
+		Final:   p.final,
+		Done:    p.done,
+		Verbose: p.verbose,
+	}
+}
 
-	var sections []string
-	const quietLimit = 500
-
-	var body []string
-	if p.input != "" {
-		body = append(body, "「"+p.input+"」")
+func (p *progressBuilder) Render() string {
+	snapshot := p.Snapshot()
+	if snapshot.Done {
+		return renderFinalCombined(snapshot)
 	}
-	if p.final != "" {
-		body = append(body, p.final)
-	}
-
-	var stepLines []string
-	for _, step := range p.steps {
-		if strings.TrimSpace(step) == "" {
-			continue
-		}
-		stepLines = append(stepLines, step)
-	}
-	if len(stepLines) > 0 {
-		if p.verbose || !p.done {
-			if p.verbose {
-				sections = append(sections, strings.Join(stepLines, "\n"))
-			} else {
-				line := stepLines[len(stepLines)-1]
-				if runeLen(line) > quietLimit {
-					line = truncateWithEllipsis(line, quietLimit)
-				}
-				sections = append(sections, line)
-			}
-		}
-	}
-
-	if len(body) > 0 {
-		sections = append(sections, strings.Join(body, "\n"))
-	}
-
-	out := strings.Join(sections, "\n\n")
-	if out == "" {
-		return ""
-	}
-	return out
+	return renderProgress(snapshot)
 }
 
 func runeLen(s string) int {
@@ -108,4 +96,76 @@ func truncateWithEllipsis(s string, limit int) string {
 		return s
 	}
 	return string(runes[:limit]) + "..."
+}
+
+func renderProgress(snapshot progressSnapshot) string {
+	logSection := buildLogSection(snapshot, progressLogLimit)
+	inputSection := buildInputSection(snapshot.Input, progressInputLimit)
+	return joinSections(logSection, inputSection)
+}
+
+func renderInitial(snapshot progressSnapshot) string {
+	return buildInputSection(snapshot.Input, progressInputLimit)
+}
+
+func renderFinalCombined(snapshot progressSnapshot) string {
+	inputSection := buildInputSection(snapshot.Input, progressInputLimit)
+	final := strings.TrimSpace(snapshot.Final)
+	return joinBody(inputSection, final)
+}
+
+func buildLogSection(snapshot progressSnapshot, limit int) string {
+	var lines []string
+	for _, step := range snapshot.Steps {
+		if strings.TrimSpace(step) == "" {
+			continue
+		}
+		lines = append(lines, step)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var logLine string
+	if snapshot.Verbose {
+		logLine = strings.Join(lines, "\n")
+	} else {
+		logLine = lines[len(lines)-1]
+	}
+	if limit > 0 && runeLen(logLine) > limit {
+		logLine = truncateWithEllipsis(logLine, limit)
+	}
+	return logLine
+}
+
+func buildInputSection(input string, limit int) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	if limit > 0 && runeLen(input) > limit {
+		input = truncateWithEllipsis(input, limit)
+	}
+	return "「" + input + "」"
+}
+
+func joinSections(sections ...string) string {
+	var cleaned []string
+	for _, section := range sections {
+		if strings.TrimSpace(section) == "" {
+			continue
+		}
+		cleaned = append(cleaned, section)
+	}
+	return strings.Join(cleaned, "\n\n")
+}
+
+func joinBody(parts ...string) string {
+	var cleaned []string
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		cleaned = append(cleaned, part)
+	}
+	return strings.Join(cleaned, "\n")
 }
