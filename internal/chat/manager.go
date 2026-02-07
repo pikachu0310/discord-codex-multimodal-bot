@@ -19,6 +19,8 @@ const (
 	commandNameReset  = "reset"
 	commandNameThread = "thread"
 	optionNameVerbose = "verbose"
+	optionNameModel   = "model"
+	optionNameReason  = "reasoning"
 
 	threadArchiveMinutes = 1440
 )
@@ -63,6 +65,28 @@ func (m *Manager) RegisterCommands() error {
 					Required:    true,
 				},
 				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        optionNameModel,
+					Description: "使用するモデル（省略時はデフォルト）",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "gpt-5.3-codex", Value: "gpt-5.3-codex"},
+						{Name: "gpt-5.2", Value: "gpt-5.2"},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        optionNameReason,
+					Description: "reasoning.effort（省略時はデフォルト）",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "Low", Value: "low"},
+						{Name: "Medium", Value: "medium"},
+						{Name: "High", Value: "high"},
+						{Name: "Extra high", Value: "xhigh"},
+					},
+				},
+				{
 					Type:        discordgo.ApplicationCommandOptionBoolean,
 					Name:        optionNameVerbose,
 					Description: "進捗ログを詳細表示する（デフォルト: 最新行のみ）",
@@ -79,6 +103,28 @@ func (m *Manager) RegisterCommands() error {
 					Name:        "message",
 					Description: "送信するメッセージ",
 					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        optionNameModel,
+					Description: "使用するモデル（省略時はデフォルト）",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "gpt-5.3-codex", Value: "gpt-5.3-codex"},
+						{Name: "gpt-5.2", Value: "gpt-5.2"},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        optionNameReason,
+					Description: "reasoning.effort（省略時はデフォルト）",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "Low", Value: "low"},
+						{Name: "Medium", Value: "medium"},
+						{Name: "High", Value: "high"},
+						{Name: "Extra high", Value: "xhigh"},
+					},
 				},
 				{
 					Type:        discordgo.ApplicationCommandOptionBoolean,
@@ -101,6 +147,28 @@ func (m *Manager) RegisterCommands() error {
 					Name:        "message",
 					Description: "スレッド開始メッセージ",
 					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        optionNameModel,
+					Description: "使用するモデル（省略時はデフォルト）",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "gpt-5.3-codex", Value: "gpt-5.3-codex"},
+						{Name: "gpt-5.2", Value: "gpt-5.2"},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        optionNameReason,
+					Description: "reasoning.effort（省略時はデフォルト）",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "Low", Value: "low"},
+						{Name: "Medium", Value: "medium"},
+						{Name: "High", Value: "high"},
+						{Name: "Extra high", Value: "xhigh"},
+					},
 				},
 			},
 		},
@@ -130,6 +198,8 @@ func (m *Manager) HandleInteraction(ic *discordgo.InteractionCreate) {
 		var (
 			msg     string
 			verbose bool
+			model   string
+			reason  string
 		)
 		for _, opt := range data.Options {
 			switch opt.Name {
@@ -137,13 +207,17 @@ func (m *Manager) HandleInteraction(ic *discordgo.InteractionCreate) {
 				msg = strings.TrimSpace(opt.StringValue())
 			case optionNameVerbose:
 				verbose = opt.BoolValue()
+			case optionNameModel:
+				model = strings.TrimSpace(opt.StringValue())
+			case optionNameReason:
+				reason = strings.TrimSpace(opt.StringValue())
 			}
 		}
 		if msg == "" {
 			m.respond(ic, "空のメッセージは送信できません。", true)
 			return
 		}
-		go m.handleChatCommand(ic, msg, verbose)
+		go m.handleChatCommand(ic, msg, verbose, model, reason)
 	case commandNameReset:
 		go m.handleResetCommand(ic)
 	case commandNameThread:
@@ -151,12 +225,26 @@ func (m *Manager) HandleInteraction(ic *discordgo.InteractionCreate) {
 			m.respond(ic, "スレッド開始メッセージがありません。", true)
 			return
 		}
-		msg := strings.TrimSpace(data.Options[0].StringValue())
+		var (
+			msg    string
+			model  string
+			reason string
+		)
+		for _, opt := range data.Options {
+			switch opt.Name {
+			case "message":
+				msg = strings.TrimSpace(opt.StringValue())
+			case optionNameModel:
+				model = strings.TrimSpace(opt.StringValue())
+			case optionNameReason:
+				reason = strings.TrimSpace(opt.StringValue())
+			}
+		}
 		if msg == "" {
 			m.respond(ic, "空のメッセージは送信できません。", true)
 			return
 		}
-		go m.handleThreadCommand(ic, msg)
+		go m.handleThreadCommand(ic, msg, model, reason)
 	}
 }
 
@@ -179,7 +267,7 @@ func (m *Manager) HandleThreadMessage(msg *discordgo.MessageCreate) {
 	progress.OnUpdate = m.makeProgressUpdater(msg.ChannelID, nil, "")
 	progress.OnUpdate(progress.Snapshot())
 
-	go m.sendAndReply(msg.ChannelID, threadSession, content, progress, func(newSessionID string) {
+	go m.sendAndReply(m.codex, msg.ChannelID, threadSession, content, progress, func(newSessionID string) {
 		effective := newSessionID
 		if effective == "" {
 			effective = threadSession
@@ -211,7 +299,7 @@ func (m *Manager) ChatInChannel(channelID, content string) (string, error) {
 		final = renderProgress(text)
 	}
 
-	if err := m.sendAndReply(channelID, sessionID, content, progress, func(newSessionID string) {
+	if err := m.sendAndReply(m.codex, channelID, sessionID, content, progress, func(newSessionID string) {
 		effective := newSessionID
 		if effective == "" {
 			effective = sessionID
@@ -231,7 +319,7 @@ func (m *Manager) ChatInChannel(channelID, content string) (string, error) {
 	return final, nil
 }
 
-func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content string, verbose bool) {
+func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content string, verbose bool, model string, reasoning string) {
 	// acknowledge quickly
 	if err := m.session.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -251,7 +339,15 @@ func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content str
 	progress.OnUpdate = m.makeProgressUpdater(channelID, ic.Interaction, "")
 	progress.OnUpdate(progress.Snapshot())
 
-	_ = m.sendAndReply(channelID, sessionID, content, progress, func(newSessionID string) {
+	codexClient := m.codex
+	if normalized, ok := normalizeModel(model); ok {
+		codexClient.Model = normalized
+	}
+	if normalized, ok := normalizeReasoningEffort(reasoning); ok {
+		codexClient.ReasoningEffort = normalized
+	}
+
+	_ = m.sendAndReply(codexClient, channelID, sessionID, content, progress, func(newSessionID string) {
 		effective := newSessionID
 		if effective == "" {
 			effective = sessionID
@@ -275,7 +371,7 @@ func (m *Manager) handleResetCommand(ic *discordgo.InteractionCreate) {
 	m.respond(ic, response, true)
 }
 
-func (m *Manager) handleThreadCommand(ic *discordgo.InteractionCreate, content string) {
+func (m *Manager) handleThreadCommand(ic *discordgo.InteractionCreate, content string, model string, reasoning string) {
 	if ic.ChannelID == "" {
 		return
 	}
@@ -320,7 +416,15 @@ func (m *Manager) handleThreadCommand(ic *discordgo.InteractionCreate, content s
 	progress.OnUpdate = m.makeProgressUpdater(thread.ID, nil, "")
 	progress.OnUpdate(progress.Snapshot())
 
-	_ = m.sendAndReply(thread.ID, m.store.GetThread(thread.ID), content, progress, func(newSessionID string) {
+	codexClient := m.codex
+	if normalized, ok := normalizeModel(model); ok {
+		codexClient.Model = normalized
+	}
+	if normalized, ok := normalizeReasoningEffort(reasoning); ok {
+		codexClient.ReasoningEffort = normalized
+	}
+
+	_ = m.sendAndReply(codexClient, thread.ID, m.store.GetThread(thread.ID), content, progress, func(newSessionID string) {
 		effective := newSessionID
 		if effective == "" {
 			effective = m.store.GetThread(thread.ID)
@@ -334,7 +438,7 @@ func (m *Manager) handleThreadCommand(ic *discordgo.InteractionCreate, content s
 	})
 }
 
-func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *progressBuilder, persist func(string)) error {
+func (m *Manager) sendAndReply(client codex.Client, targetID, sessionID, content string, progress *progressBuilder, persist func(string)) error {
 	lock := m.getLock(targetID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -346,7 +450,7 @@ func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *pr
 		progress = newProgress("Codex")
 	}
 
-	reasoning := m.codex.ReasoningEffort
+	reasoning := client.ReasoningEffort
 	if reasoning == "" {
 		reasoning = "default"
 	}
@@ -357,7 +461,11 @@ func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *pr
 	if sessionLabel == "" {
 		sessionLabel = "new"
 	}
-	progress.AddStep(fmt.Sprintf("🚀 実行開始 (model: %s / reasoning: %s / session: %s)", m.codex.Model, reasoning, sessionLabel))
+	modelLabel := client.Model
+	if strings.TrimSpace(modelLabel) == "" {
+		modelLabel = "default"
+	}
+	progress.AddStep(fmt.Sprintf("🚀 実行開始 (model: %s / reasoning: %s / session: %s)", modelLabel, reasoning, sessionLabel))
 	if progress.OnUpdate != nil {
 		progress.OnUpdate(progress.Snapshot())
 	}
@@ -371,7 +479,7 @@ func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *pr
 
 	log.Printf("[chat] send start target=%s session=%s len(content)=%d", targetID, sessionID, len(content))
 
-	reply, newSessionID, err := m.codex.Send(ctx, sessionID, content, update)
+	reply, newSessionID, err := client.Send(ctx, sessionID, content, update)
 	if err != nil {
 		log.Printf("codex send failed: %v", err)
 		progress.SetFinal(fmt.Sprintf("⚠️ Codex への送信に失敗しました: %v", err))
@@ -455,6 +563,30 @@ func interactionUserID(ic *discordgo.InteractionCreate) string {
 		return ic.User.ID
 	}
 	return ""
+}
+
+func normalizeModel(model string) (string, bool) {
+	model = strings.TrimSpace(model)
+	switch model {
+	case "":
+		return "", false
+	case "gpt-5.3-codex", "gpt-5.2":
+		return model, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeReasoningEffort(reasoning string) (string, bool) {
+	reasoning = strings.TrimSpace(strings.ToLower(reasoning))
+	switch reasoning {
+	case "":
+		return "", false
+	case "low", "medium", "high", "xhigh":
+		return reasoning, true
+	default:
+		return "", false
+	}
 }
 
 // progressUpdater handles Discord message updates with length limits.
