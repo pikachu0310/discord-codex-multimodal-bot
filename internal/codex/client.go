@@ -16,6 +16,7 @@ import (
 type Client struct {
 	Model           string
 	ReasoningEffort string
+	Workdir         string
 }
 
 // Send executes `codex exec` (or `exec resume`) and returns the assistant reply text and session ID.
@@ -23,6 +24,9 @@ type Client struct {
 // The onUpdate callback receives short progress summaries as the CLI streams events.
 func (c Client) Send(ctx context.Context, sessionID, prompt string, onUpdate func(string)) (string, string, error) {
 	args := []string{"exec"}
+	if c.Workdir != "" {
+		args = append(args, "--cd", c.Workdir)
+	}
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
 	}

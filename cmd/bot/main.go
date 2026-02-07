@@ -36,6 +36,7 @@ func main() {
 	codexClient := codex.Client{
 		Model:           cfg.CodexModel,
 		ReasoningEffort: cfg.ReasoningEffort,
+		Workdir:         cfg.CodexWorkdir,
 	}
 
 	var alarmClient *alarm.Client

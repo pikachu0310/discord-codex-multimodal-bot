@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 const (
@@ -22,6 +24,7 @@ type Config struct {
 	GeminiAPIKey        string
 	CodexModel          string
 	ReasoningEffort     string
+	CodexWorkdir        string
 	HomeAssistantToken  string
 	HomeAssistantBase   string
 	HomeAssistantEvent  string
@@ -37,6 +40,7 @@ func Load() (Config, error) {
 		GeminiAPIKey:        os.Getenv("GEMINI_API_KEY"),
 		CodexModel:          os.Getenv("CODEX_MODEL"),
 		ReasoningEffort:     os.Getenv("CODEX_REASONING_EFFORT"),
+		CodexWorkdir:        os.Getenv("CODEX_WORKDIR"),
 		HomeAssistantToken:  os.Getenv("HOME_ASSISTANT_TOKEN"),
 		HomeAssistantBase:   os.Getenv("HOME_ASSISTANT_BASE_URL"),
 		HomeAssistantEvent:  os.Getenv("HOME_ASSISTANT_ALARM_EVENT"),
@@ -58,6 +62,17 @@ func Load() (Config, error) {
 		cfg.HomeAssistantEvent = DefaultAlarmEvent
 	}
 
+	if cfg.CodexWorkdir != "" {
+		workdir, err := expandPath(cfg.CodexWorkdir)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid CODEX_WORKDIR: %w", err)
+		}
+		cfg.CodexWorkdir = workdir
+		if err := os.MkdirAll(cfg.CodexWorkdir, 0o755); err != nil {
+			return Config{}, fmt.Errorf("failed to create CODEX_WORKDIR %q: %w", cfg.CodexWorkdir, err)
+		}
+	}
+
 	var missing []string
 	if cfg.DiscordToken == "" {
 		missing = append(missing, "DISCORD_TOKEN")
@@ -70,4 +85,25 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func expandPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	path = os.ExpandEnv(path)
+
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if path == "~" {
+			path = home
+		} else {
+			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return filepath.Abs(path)
 }

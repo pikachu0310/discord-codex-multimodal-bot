@@ -45,6 +45,7 @@ docker run --publish 8000:8000 \
 | `CODEX_STATE_PATH` | ❌ | `data/codex_sessions.json` | Codex セッション ID 永続化ファイル |
 | `CODEX_MODEL` | ❌ | `gpt-5.1` | Codex に渡すモデル名 |
 | `CODEX_REASONING_EFFORT` | ❌ | `minimal` | Codex の reasoning effort（設定が無ければ Codex デフォルト） |
+| `CODEX_WORKDIR` | ❌ | - | Codex の作業ディレクトリ（`codex exec --cd` 相当。未設定なら Bot 起動ディレクトリ） |
 | `GEMINI_API_KEY` | ❌ | - | スレッド名生成に使用（未設定なら日時+IDで命名） |
 | `HOME_ASSISTANT_BASE_URL` | ❌ | - | `/alarm` でイベントを送る Home Assistant のベース URL（例: `https://example.ui.nabu.casa`） |
 | `HOME_ASSISTANT_TOKEN` | ❌ | - | Home Assistant の Long-Lived Access Token（`/alarm` 用） |
@@ -57,6 +58,7 @@ set -x DISCORD_TOKEN your-token
 set -x TRANSCRIPT_CHANNEL_ID 123456789012345678
 set -x FWS_BASE_URL http://localhost:8000
 set -x CODEX_STATE_PATH data/codex_sessions.json
+set -x CODEX_WORKDIR ~/pikahome-work
 # set -x GEMINI_API_KEY your-gemini-key  # 必要な場合のみ
 ```
 

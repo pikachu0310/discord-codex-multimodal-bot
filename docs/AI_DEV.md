@@ -50,6 +50,7 @@
 - `CODEX_STATE_PATH`（デフォルト `data/codex_sessions.json`）
 - `CODEX_MODEL`（デフォルト `gpt-5.1`）
 - `CODEX_REASONING_EFFORT`（デフォルト `minimal`。空なら Codex デフォルト）
+- `CODEX_WORKDIR`（任意。Codex の作業ディレクトリ。`~/...` の `~` は自動展開）
 - `GEMINI_API_KEY`（任意、スレッド名生成用）
 - `/alarm` 用に `HOME_ASSISTANT_BASE_URL`, `HOME_ASSISTANT_TOKEN`, `HOME_ASSISTANT_ALARM_EVENT`（未設定でも他機能は動作）
 
