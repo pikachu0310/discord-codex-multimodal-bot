@@ -7,6 +7,7 @@ import (
 
 type progressBuilder struct {
 	model    string
+	authorID string
 	input    string
 	steps    []string
 	final    string
@@ -17,6 +18,7 @@ type progressBuilder struct {
 }
 
 type progressSnapshot struct {
+	AuthorID string
 	Input   string
 	Steps   []string
 	Final   string
@@ -39,6 +41,11 @@ func newProgress(model string) *progressBuilder {
 
 func (p *progressBuilder) WithInput(input string) *progressBuilder {
 	p.input = strings.TrimSpace(input)
+	return p
+}
+
+func (p *progressBuilder) WithAuthorID(authorID string) *progressBuilder {
+	p.authorID = strings.TrimSpace(authorID)
 	return p
 }
 
@@ -70,6 +77,7 @@ func (p *progressBuilder) Snapshot() progressSnapshot {
 	defer p.mu.Unlock()
 	steps := append([]string(nil), p.steps...)
 	return progressSnapshot{
+		AuthorID: p.authorID,
 		Input:   p.input,
 		Steps:   steps,
 		Final:   p.final,
@@ -100,16 +108,16 @@ func truncateWithEllipsis(s string, limit int) string {
 
 func renderProgress(snapshot progressSnapshot) string {
 	logSection := buildLogSection(snapshot, progressLogLimit)
-	inputSection := buildInputSection(snapshot.Input, progressInputLimit)
+	inputSection := buildInputSection(snapshot.AuthorID, snapshot.Input, progressInputLimit)
 	return joinSections(logSection, inputSection)
 }
 
 func renderInitial(snapshot progressSnapshot) string {
-	return buildInputSection(snapshot.Input, progressInputLimit)
+	return buildInputSection(snapshot.AuthorID, snapshot.Input, progressInputLimit)
 }
 
 func renderFinalCombined(snapshot progressSnapshot) string {
-	inputSection := buildInputSection(snapshot.Input, progressInputLimit)
+	inputSection := buildInputSection(snapshot.AuthorID, snapshot.Input, progressInputLimit)
 	final := strings.TrimSpace(snapshot.Final)
 	return joinBody(inputSection, final)
 }
@@ -137,7 +145,8 @@ func buildLogSection(snapshot progressSnapshot, limit int) string {
 	return logLine
 }
 
-func buildInputSection(input string, limit int) string {
+func buildInputSection(authorID, input string, limit int) string {
+	authorID = strings.TrimSpace(authorID)
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return ""
@@ -145,7 +154,11 @@ func buildInputSection(input string, limit int) string {
 	if limit > 0 && runeLen(input) > limit {
 		input = truncateWithEllipsis(input, limit)
 	}
-	return "「" + input + "」"
+	mention := ""
+	if authorID != "" {
+		mention = "<@" + authorID + "> "
+	}
+	return mention + "「" + input + "」"
 }
 
 func joinSections(sections ...string) string {

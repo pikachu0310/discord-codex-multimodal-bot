@@ -175,7 +175,7 @@ func (m *Manager) HandleThreadMessage(msg *discordgo.MessageCreate) {
 		return
 	}
 
-	progress := newProgress("Codex").WithInput(content)
+	progress := newProgress("Codex").WithAuthorID(msg.Author.ID).WithInput(content)
 	progress.OnUpdate = m.makeProgressUpdater(msg.ChannelID, nil, "")
 	progress.OnUpdate(progress.Snapshot())
 
@@ -245,7 +245,7 @@ func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content str
 
 	channelID := ic.ChannelID
 	sessionID := m.store.GetChannel(channelID)
-	progress := newProgress("Codex").WithInput(content)
+	progress := newProgress("Codex").WithAuthorID(interactionUserID(ic)).WithInput(content)
 	progress.SetVerbose(verbose)
 
 	progress.OnUpdate = m.makeProgressUpdater(channelID, ic.Interaction, "")
@@ -316,7 +316,7 @@ func (m *Manager) handleThreadCommand(ic *discordgo.InteractionCreate, content s
 		log.Printf("failed to send initial thread message: %v", err)
 	}
 
-	progress := newProgress("Codex").WithInput(content)
+	progress := newProgress("Codex").WithAuthorID(interactionUserID(ic)).WithInput(content)
 	progress.OnUpdate = m.makeProgressUpdater(thread.ID, nil, "")
 	progress.OnUpdate(progress.Snapshot())
 
@@ -444,6 +444,19 @@ func (m *Manager) followup(ic *discordgo.InteractionCreate, content string, ephe
 // Close is a no-op placeholder for future cleanup hooks.
 func (m *Manager) Close() {}
 
+func interactionUserID(ic *discordgo.InteractionCreate) string {
+	if ic == nil {
+		return ""
+	}
+	if ic.Member != nil && ic.Member.User != nil && ic.Member.User.ID != "" {
+		return ic.Member.User.ID
+	}
+	if ic.User != nil && ic.User.ID != "" {
+		return ic.User.ID
+	}
+	return ""
+}
+
 // progressUpdater handles Discord message updates with length limits.
 type progressUpdater struct {
 	session        *discordgo.Session
@@ -486,7 +499,7 @@ func (u *progressUpdater) sendFinal(interaction *discordgo.Interaction, snapshot
 	}
 	u.finalSent = true
 
-	inputSection := buildInputSection(snapshot.Input, progressInputLimit)
+	inputSection := buildInputSection(snapshot.AuthorID, snapshot.Input, progressInputLimit)
 	finalSection := strings.TrimSpace(snapshot.Final)
 	combined := joinBody(inputSection, finalSection)
 	if strings.TrimSpace(combined) == "" {
